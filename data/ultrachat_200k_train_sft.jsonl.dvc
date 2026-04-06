@@ -1,0 +1,5 @@
+outs:
+- md5: 3c378bbd8743ad30fc2cb24d350f6ce9
+  size: 1439621519
+  hash: md5
+  path: ultrachat_200k_train_sft.jsonl
