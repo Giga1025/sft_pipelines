@@ -157,6 +157,7 @@ def train_loop_per_worker(config: dict):
         bf16=True,
         num_generations=num_gens,
         max_completion_length=512,
+        deepspeed = config["deepspeed_config"],
         save_total_limit=3, # Restored limit
         report_to="wandb",
         use_liger_kernel=True,
@@ -202,7 +203,8 @@ def launch_grpo():
             "output_dir": "/lustre/nvwulf/scratch/ybhuma/checkpoints/grpo_mistral",
             "max_steps": 100,
             "wandb_run_id": f"grpo-fault-tol-{int(time.time())}",
-            "num_generations": 8
+            "num_generations": 8,
+            "deepspeed_config": "configs/ds_zero2.json"
         },
         scaling_config=ScalingConfig(num_workers=1, use_gpu=True),
         run_config=RunConfig(
