@@ -17,7 +17,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - RANK%(message)s')
 logger = logging.getLogger("grpo_fault_tolerant")
 
 # ─── 1. Reward Functions (GRPO Logic) ─────────────────────────────────────────
-def format_reward_func(completions, **kwargs):
+def format_reward_func(prompts, completions, **kwargs):
     rewards = []
     for completion in completions:
         score = 0.0
@@ -31,9 +31,20 @@ def format_reward_func(completions, **kwargs):
         rewards.append(score)
     return rewards
 
-def correctness_reward_func(prompts, completions, answer, **kwargs):
+def correctness_reward_func(prompts, completions, **kwargs):
+    """
+    Standardized signature: (prompts, completions, **kwargs)
+    We pull 'answer' (the ground truth) from kwargs.
+    """
+    # 🚨 CRITICAL: Pull the ground truth list from kwargs
+    # In GRPO, this will be a list of truth-strings, one for each completion.
+    truth_labels = kwargs.get("answer")
+    
+    if not truth_labels:
+        return [0.0] * len(completions)
+
     rewards = []
-    for comp, truth in zip(completions, answer):
+    for comp, truth in zip(completions, truth_labels):
         match = re.search(r"<answer>(.*?)</answer>", comp, re.DOTALL | re.IGNORECASE)
         if match:
             extracted = match.group(1).strip()
@@ -118,7 +129,18 @@ def find_latest_checkpoint(output_dir: str):
     if not os.path.exists(output_dir): return None
     checkpoint_dirs = glob.glob(os.path.join(output_dir, "checkpoint-*"))
     if not checkpoint_dirs: return None
-    return max(checkpoint_dirs, key=lambda x: int(x.split("-")[-1]))
+    
+    def extract_step(path):
+        try: return int(path.split("-")[-1])
+        except: return -1
+
+    # Sort so we check newest first
+    checkpoint_dirs.sort(key=extract_step, reverse=True)
+    for latest in checkpoint_dirs:
+        # Check for the 'trainer_state' to ensure the save actually finished
+        if os.path.exists(os.path.join(latest, "trainer_state.json")):
+            return latest
+    return None
 
 # ─── 4. Main Worker Loop with OOM & NCCL Recovery ────────────────────────────
 def train_loop_per_worker(config: dict):
@@ -138,7 +160,15 @@ def train_loop_per_worker(config: dict):
     train_dataset = raw_dataset.map(lambda x: {
         "prompt": f"<s>[INST] Think in <think>. Answer in <answer>.\n\n{x['question']} [/INST]",
         "answer": x['answer'].split("#### ")[-1]
-    }).remove_columns(raw_dataset.column_names)
+    })
+
+    # Explicitly keep only what the trainer needs
+    train_dataset = train_dataset.select_columns(["prompt", "answer"])
+
+    world_size = train.get_context().get_world_size()
+    world_rank = train.get_context().get_world_rank()
+
+    train_dataset = train_dataset.shard(num_shards=world_size, index=world_rank)
 
     # ── OOM Flag Check (Memory reduction on restart) ──
     oom_flag_path = f"/tmp/grpo_oom_{world_rank}.flag"
@@ -150,19 +180,22 @@ def train_loop_per_worker(config: dict):
     # ── GRPO Config ──
     training_args = GRPOConfig(
         output_dir=output_dir,
-        learning_rate=1e-5,
-        per_device_train_batch_size=1,
+        learning_rate=5e-6,
+        optim = "adamw_bnb_8bit",
+        per_device_train_batch_size=2,
         gradient_accumulation_steps=4,
         max_steps=config["max_steps"],
         bf16=True,
         num_generations=num_gens,
+        generation_batch_size=num_gens,
         max_completion_length=512,
-        deepspeed = config["deepspeed_config"],
+        # deepspeed = config["deepspeed_config"],
         save_total_limit=3, # Restored limit
         report_to="wandb",
         use_liger_kernel=True,
         gradient_checkpointing=True,
         logging_steps=1,
+        beta=0.04, 
     )
 
     if world_rank == 0:
@@ -173,13 +206,17 @@ def train_loop_per_worker(config: dict):
         args=training_args,
         train_dataset=train_dataset,
         reward_funcs=[format_reward_func, correctness_reward_func],
-        peft_config=LoraConfig(r=16, lora_alpha=32, target_modules="all-linear", task_type="CAUSAL_LM"),
+        # peft_config=LoraConfig(r=16, lora_alpha=32, target_modules="all-linear", task_type="CAUSAL_LM"),
         processing_class=tokenizer,
         callbacks=[FaultToleranceCallback(log_path=f"/tmp/faults_rank{world_rank}.json")]
     )
 
     try:
         trainer.train(resume_from_checkpoint=resume_checkpoint)
+
+        if world_rank == 0:
+            logger.info("Training complete. Saving final model...")
+            trainer.save_model(os.path.join(output_dir, "final_model"))
         if world_rank == 0 and os.path.exists(oom_flag_path):
             os.remove(oom_flag_path)
     except torch.cuda.OutOfMemoryError:
@@ -192,7 +229,7 @@ def train_loop_per_worker(config: dict):
             logger.critical("NCCL Error detected. Multi-GPU sync failure. Restarting all ranks.")
             raise
         raise e
-
+# reward_funcs=[lambda completions, **kwargs: [1.0 for _ in completions]], # Dummy reward
 # ─── 5. Ray Driver ───────────────────────────────────────────────────────────
 def launch_grpo():
     ray.init(ignore_reinit_error=True)
@@ -200,11 +237,11 @@ def launch_grpo():
         train_loop_per_worker=train_loop_per_worker,
         train_loop_config={
             "model_path": "/data01/yaswanthreddy/models/mistral-7b-v0.1",
-            "output_dir": "/lustre/nvwulf/scratch/ybhuma/checkpoints/grpo_mistral",
-            "max_steps": 100,
+            "output_dir": "./mistral-fault-base-test",
+            "max_steps": 10,
             "wandb_run_id": f"grpo-fault-tol-{int(time.time())}",
             "num_generations": 8,
-            "deepspeed_config": "configs/ds_zero2.json"
+            # "deepspeed_config": "configs/ds_zero2.json"
         },
         scaling_config=ScalingConfig(num_workers=1, use_gpu=True),
         run_config=RunConfig(
