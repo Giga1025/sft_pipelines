@@ -233,11 +233,14 @@ def train_loop_per_worker(config: dict):
 # ─── 5. Ray Driver ───────────────────────────────────────────────────────────
 def launch_grpo():
     ray.init(ignore_reinit_error=True)
+
+    model_id = "mistralai/Mistral-7B-v0.1" 
+    lustre_path = "/lustre/nvwulf/scratch/ybhuma"
     trainer = TorchTrainer(
         train_loop_per_worker=train_loop_per_worker,
         train_loop_config={
-            "model_path": "/data01/yaswanthreddy/models/mistral-7b-v0.1",
-            "output_dir": "./mistral-fault-base-test",
+            "model_path": model_id,
+            "output_dir": f"{lustre_path}/checkpoints/grpo_mistral",
             "max_steps": 10,
             "wandb_run_id": f"grpo-fault-tol-{int(time.time())}",
             "num_generations": 8,
