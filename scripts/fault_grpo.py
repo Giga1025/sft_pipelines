@@ -241,7 +241,7 @@ def launch_grpo():
         train_loop_config={
             "model_path": model_id,
             "output_dir": f"{lustre_path}/checkpoints/grpo_mistral",
-            "max_steps": 10,
+            "max_steps": 250,
             "wandb_run_id": f"grpo-fault-tol-{int(time.time())}",
             "num_generations": 8,
             # "deepspeed_config": "configs/ds_zero2.json"
