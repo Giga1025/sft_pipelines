@@ -182,13 +182,13 @@ def train_loop_per_worker(config: dict):
         output_dir=output_dir,
         learning_rate=5e-6,
         optim = "adamw_bnb_8bit",
-        per_device_train_batch_size=2,
-        gradient_accumulation_steps=4,
+        per_device_train_batch_size=1,
+        gradient_accumulation_steps=8,
         max_steps=config["max_steps"],
         bf16=True,
         num_generations=num_gens,
         generation_batch_size=num_gens,
-        max_completion_length=512,
+        max_completion_length=2048,
         # deepspeed = config["deepspeed_config"],
         save_total_limit=3, # Restored limit
         report_to="wandb",
@@ -241,7 +241,7 @@ def launch_grpo():
         train_loop_config={
             "model_path": model_id,
             "output_dir": f"{lustre_path}/checkpoints/grpo_mistral",
-            "max_steps": 250,
+            "max_steps": 1500,
             "wandb_run_id": f"grpo-fault-tol-{int(time.time())}",
             "num_generations": 8,
             # "deepspeed_config": "configs/ds_zero2.json"
